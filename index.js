@@ -1,4 +1,3 @@
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { freezeMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { statSync } from 'node:fs'
@@ -7,8 +6,14 @@ import z from '@deepseek-ai/schemastery'
 export const name = 'dsh-image-guard-toggle'
 export const inject = ['tools']
 
-const NS = settingsNamespace('image-guard-toggle')
-const LLM_NS = settingsNamespace('llm-pi-ai')
+export const Config = z.object({
+  enabled: z.boolean().default(true).volatile(),
+  budgetMb: z.number().step(1).min(1).max(64).default(8).volatile(),
+  route: z.string().default('hyper').volatile(),
+})
+
+const ENTRY_ID = 'image-guard-toggle'
+const LLM_NS = 'llm-pi-ai'
 const BYTES_PER_MB = 1048576
 const DEFAULT_ROUTE = 'hyper'
 const DEFAULT_BUDGET_MB = 8
@@ -117,12 +122,6 @@ function usageLine(count, bytes, budget) {
   return `[image-guard] session image context: ${count} image${count === 1 ? '' : 's'}, about ${formatMb(bytes)} MB of ${formatMb(budget)} MB used (${pct}%).${tail}`
 }
 
-const ToggleSchema = z.object({
-  enabled: z.boolean().default(true),
-  budgetMb: z.number().step(1).min(1).max(64).default(DEFAULT_BUDGET_MB),
-  route: z.string().default(DEFAULT_ROUTE),
-})
-
 export function planMirrorOperation(llm, toggle) {
   const route = typeof toggle.route === 'string' && toggle.route.length > 0 ? toggle.route : DEFAULT_ROUTE
   const budget = Number(toggle.budgetMb)
@@ -140,7 +139,7 @@ export function planMirrorOperation(llm, toggle) {
   return { kind: 'op', op: { op: 'set', path, value: want } }
 }
 
-export function apply(ctx) {
+export function apply(ctx, config) {
   let settingsRef
   let fs
   try {
@@ -156,9 +155,8 @@ export function apply(ctx) {
   }
 
   const budgetBytes = () => {
-    const value = settingsRef?.get(NS) ?? {}
-    if (value.enabled === false) return undefined
-    const mb = Number(value.budgetMb)
+    if (config.enabled.get() === false) return undefined
+    const mb = Number(config.budgetMb.get())
     return (Number.isFinite(mb) && mb > 0 ? mb : DEFAULT_BUDGET_MB) * BYTES_PER_MB
   }
 
@@ -343,7 +341,6 @@ export function apply(ctx) {
 
   const install = (settings) => {
     settingsRef = settings
-    settings.register(NS, ToggleSchema)
 
     let writing = false
     let timer
@@ -360,7 +357,7 @@ export function apply(ctx) {
 
     const descriptorFor = (ns) => {
       try {
-        return (settings.describe() ?? []).find((d) => d.ns === ns)
+        return (settings.describe() ?? []).find((descriptor) => descriptor.ns === ns)
       } catch {
         return undefined
       }
@@ -376,7 +373,7 @@ export function apply(ctx) {
       if (!Number.isInteger(mb) || mb < 1 || mb > 64) return false
       adopted = true
       writing = true
-      Promise.resolve(settings.update(NS, { budgetMb: mb }))
+      Promise.resolve(settings.update(ENTRY_ID, { budgetMb: mb }))
         .catch((error) => {
           ctx.logger.error('image-guard-toggle: adopting existing budget failed', error)
         })
@@ -388,11 +385,11 @@ export function apply(ctx) {
 
     const mirror = () => {
       if (writing) return
-      const llm = settings.get(LLM_NS)
-      if (llm === undefined) {
+      const llmDescriptor = descriptorFor(LLM_NS)
+      if (llmDescriptor === undefined) {
         if (retries >= RETRY_LIMIT) {
           stopRetry()
-          ctx.logger.warn('image-guard-toggle: settings namespace "llm-pi-ai" never registered; mirror disabled')
+          ctx.logger.warn('image-guard-toggle: entry "llm-pi-ai" never activated; mirror disabled')
           return
         }
         retries += 1
@@ -400,11 +397,11 @@ export function apply(ctx) {
         return
       }
       stopRetry()
-      const resolved = settings.get(NS) ?? {}
+      const llm = { providers: llmDescriptor.value?.providers ?? {} }
       const plan = planMirrorOperation(llm, {
-        enabled: resolved.enabled !== false,
-        budgetMb: resolved.budgetMb,
-        route: resolved.route,
+        enabled: config.enabled.get() !== false,
+        budgetMb: config.budgetMb.get(),
+        route: config.route.get(),
       })
       if (plan.kind === 'noop') return
       if (plan.kind === 'missing-route') {
@@ -415,7 +412,7 @@ export function apply(ctx) {
         return
       }
       warnedRoute = false
-      if (adoptExistingOverride(plan, descriptorFor(NS)?.user)) return
+      if (adoptExistingOverride(plan, descriptorFor(ENTRY_ID)?.user)) return
       writing = true
       Promise.resolve(settings.mutate(LLM_NS, [plan.op]))
         .catch((error) => {
@@ -426,9 +423,10 @@ export function apply(ctx) {
         })
     }
 
-    ctx.on('settings/updated', (changed) => {
-      if (changed === NS || changed === LLM_NS) mirror()
+    ctx.on('settings/document-updated', (ns) => {
+      if (ns === ENTRY_ID || ns === LLM_NS) mirror()
     })
+    ctx.on('loader/volatile-update', () => mirror())
     ctx.effect(() => stopRetry)
     mirror()
   }

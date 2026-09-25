@@ -1,6 +1,6 @@
 {
   "name": "dsh-image-guard-toggle",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "DSH plugin with a session-header button that toggles the dsh-llm-pi-ai request image-size guard (maxRequestImageBytes) on the configured provider route, live and without restart.",
   "type": "module",
   "main": "index.js",
