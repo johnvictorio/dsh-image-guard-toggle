@@ -191,10 +191,10 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       const slots = ctx.get('slots')
-      const settingsScope = ctx.get('settingsScope')
-      if (!React || slots === undefined || settingsScope === undefined) return
+      const configForms = ctx.get('configForms')
+      if (!React || slots === undefined || configForms === undefined) return
 
-      const scope = settingsScope.bind({ namespace: NAMESPACE })
+      const scope = configForms.get(NAMESPACE)
 
       slots.inject('conversation.session.header.utilities', () => slots.register({
         name: 'conversation.session.header.utilities',
@@ -205,7 +205,7 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply
-    exports.inject = ['slots', 'settingsScope']
+    exports.inject = ['slots', 'configForms']
     return module.exports
   },
 })
